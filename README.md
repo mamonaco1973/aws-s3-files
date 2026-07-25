@@ -9,7 +9,7 @@ This solution exposes that storage in two ways:
 
 The mini-AD environment (Samba 4 on Ubuntu) provides Active Directory authentication and DNS. S3 Files provides file-system access to object storage. Together they enable a hybrid setup where both Linux and Windows domain-joined clients consume the same S3 bucket as files.
 
-![AWS diagram](aws-efs.png)
+![AWS diagram](aws-s3-files.png)
 
 > **Note:** The architecture diagram and console screenshots are carried over from the EFS version and still need to be regenerated to reflect S3 Files.
 

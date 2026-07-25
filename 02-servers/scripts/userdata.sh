@@ -41,16 +41,18 @@ sed -i 's/^SELINUX=enforcing/SELINUX=permissive/' /etc/selinux/config || true
 # ------------------------------------------------------------------------------
 # The backing S3 bucket is presented as NFS v4.2. The mount helper resolves the
 # in-VPC mount target from the file-system id, so no DNS/IP is needed. nofail
-# keeps boot resilient if the target lags on startup.
-# Note: user home directories are intentionally NOT placed on S3 Files — its
-# ~60s write aggregation and lock bypass make it unsuitable for live homes.
+# keeps boot resilient if the target lags on startup. Homes are served from the
+# EFS-backed serving tier, so read-your-writes and locking behave like EFS.
 # ==============================================================================
 mkdir -p /s3
 echo "${s3files_fs_id}:/ /s3 s3files _netdev,nofail 0 0" >> /etc/fstab
 systemctl daemon-reload
 mount /s3
 
-mkdir -p /s3/data
+mkdir -p /s3/home /s3/data
+echo "${s3files_fs_id}:/home /home s3files _netdev,nofail 0 0" >> /etc/fstab
+systemctl daemon-reload
+mount /home
 
 # ==============================================================================
 # Active Directory join
