@@ -12,39 +12,39 @@ trap 'echo "ERROR at line $LINENO"; exit 1' ERR
 
 echo "user-data start: $(date -Is)"
 
-# SSM agent
-snap install amazon-ssm-agent --classic
-systemctl enable snap.amazon-ssm-agent.amazon-ssm-agent.service
-systemctl start snap.amazon-ssm-agent.amazon-ssm-agent.service
+# ==============================================================================
+# Base setup — Amazon Linux 2023 gateway
+# ------------------------------------------------------------------------------
+# On AL2023 the SSM agent and AWS CLI v2 are preinstalled, and amazon-efs-utils
+# 3.x (which carries the mount.s3files helper) is available prebuilt in the
+# default repos — so there is no on-boot source build.
+# ==============================================================================
 
-# Base packages
-apt-get update -y
-export DEBIAN_FRONTEND=noninteractive
-apt-get install -y \
-  less unzip realmd sssd-ad sssd-tools libnss-sss libpam-sss adcli \
-  samba samba-common-bin samba-libs oddjob oddjob-mkhomedir packagekit \
-  krb5-user nano vim nfs-common winbind libpam-winbind libnss-winbind stunnel4
+# SSM agent ships with AL2023; just make sure it is running.
+systemctl enable --now amazon-ssm-agent
 
-# amazon-efs-utils — ships the mount.s3files helper in v3.0.0+
-cd /tmp
-git clone https://github.com/mamonaco1973/amazon-efs-utils.git
-cd amazon-efs-utils
-dpkg -i amazon-efs-utils*.deb
-# Fail fast (ERR trap) if the packaged deb predates S3 Files support.
+# AD membership, Samba, NFS client, and the S3 Files mount helper.
+dnf -y install \
+  realmd sssd sssd-tools adcli oddjob oddjob-mkhomedir \
+  samba samba-common-tools samba-winbind samba-winbind-clients \
+  sssd-winbind-idmap krb5-workstation authselect nfs-utils \
+  amazon-efs-utils git jq nano vim less unzip
+# Fail fast (ERR trap) if the S3 Files helper is somehow absent.
 which mount.s3files
 
-# AWS CLI v2
-cd /tmp
-curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscliv2.zip
-unzip -q awscliv2.zip
-./aws/install
-rm -rf aws awscliv2.zip
+# SELinux to permissive — avoids Samba/NFS labeling denials in this lab.
+setenforce 0 || true
+sed -i 's/^SELINUX=enforcing/SELINUX=permissive/' /etc/selinux/config || true
 
-# S3 Files mount — the backing S3 bucket presented as NFS v4.2. The mount
-# helper resolves the in-VPC mount target from the file-system id, so no
-# DNS/IP is needed. nofail keeps boot resilient if the target lags on startup.
+# ==============================================================================
+# S3 Files mount
+# ------------------------------------------------------------------------------
+# The backing S3 bucket is presented as NFS v4.2. The mount helper resolves the
+# in-VPC mount target from the file-system id, so no DNS/IP is needed. nofail
+# keeps boot resilient if the target lags on startup.
 # Note: user home directories are intentionally NOT placed on S3 Files — its
 # ~60s write aggregation and lock bypass make it unsuitable for live homes.
+# ==============================================================================
 mkdir -p /s3
 echo "${s3files_fs_id}:/ /s3 s3files _netdev,nofail 0 0" >> /etc/fstab
 systemctl daemon-reload
@@ -52,7 +52,9 @@ mount /s3
 
 mkdir -p /s3/data
 
-# AD join
+# ==============================================================================
+# Active Directory join
+# ==============================================================================
 secretValue=$(aws secretsmanager get-secret-value \
   --secret-id ${admin_secret} \
   --query SecretString \
@@ -65,12 +67,14 @@ echo -e "$admin_password" | realm join \
   --membership-software=samba \
   -U "$admin_username" \
   ${domain_fqdn} \
-  --verbose 
+  --verbose
 
-# SSH + SSSD tweaks
-sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' \
-  /etc/ssh/sshd_config.d/60-cloudimg-settings.conf
-
+# ==============================================================================
+# SSSD + PAM tweaks
+# ------------------------------------------------------------------------------
+# Match the DC's POSIX attributes (uidNumber/gidNumber) rather than algorithmic
+# id mapping, drop the realm suffix from names, and flatten home paths.
+# ==============================================================================
 sed -i 's/use_fully_qualified_names = True/use_fully_qualified_names = False/' \
   /etc/sssd/sssd.conf
 sed -i 's/ldap_id_mapping = True/ldap_id_mapping = False/' \
@@ -78,12 +82,16 @@ sed -i 's/ldap_id_mapping = True/ldap_id_mapping = False/' \
 sed -i 's|fallback_homedir = /home/%u@%d|fallback_homedir = /home/%u|' \
   /etc/sssd/sssd.conf
 
-touch /etc/skel/.Xauthority
-chmod 600 /etc/skel/.Xauthority
-pam-auth-update --enable mkhomedir
-systemctl restart ssh
+# Create home dirs on first login (oddjobd) and allow AD password logins.
+authselect select sssd with-mkhomedir --force
+systemctl enable --now oddjobd
 
-# Samba
+echo 'PasswordAuthentication yes' > /etc/ssh/sshd_config.d/60-passwordauth.conf
+systemctl restart sshd
+
+# ==============================================================================
+# Samba member — re-export /s3 over SMB for Windows clients
+# ==============================================================================
 systemctl stop sssd
 
 cat > /tmp/smb.conf <<EOF
@@ -98,11 +106,6 @@ aio write size = 1
 use sendfile = yes
 
 passdb backend = tdbsam
-
-printing = cups
-printcap name = cups
-load printers = yes
-cups options = raw
 
 kerberos method = secrets and keytab
 
@@ -165,9 +168,12 @@ EOF
 cp /tmp/nsswitch.conf /etc/nsswitch.conf
 rm /tmp/nsswitch.conf
 
+systemctl enable --now winbind smb nmb
 systemctl restart winbind smb nmb sssd
 
+# ==============================================================================
 # Sudo + permissions
+# ==============================================================================
 echo "%linux-admins ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/10-linux-admins
 sed -i 's/^\(\s*HOME_MODE\s*\)[0-9]\+/\10700/' /etc/login.defs
 

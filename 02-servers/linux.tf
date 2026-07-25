@@ -2,7 +2,7 @@
 # FILE: linux.tf
 #
 # Purpose:
-#   - Resolves the latest Canonical Ubuntu 24.04 AMI.
+#   - Resolves the latest Amazon Linux 2023 AMI.
 #   - Provisions an EC2 instance that mounts the S3 Files file system.
 #   - Integrates the instance into the Active Directory domain.
 #   - Re-exports the S3 Files mount over SMB so Windows clients can reach it.
@@ -13,43 +13,42 @@
 #   - S3 Files client configuration and AD integration.
 #
 # Notes:
-#   - AMI resolution is dynamic and always tracks Canonical’s latest release.
+#   - AL2023 ships amazon-efs-utils 3.x (mount.s3files) as a prebuilt dnf
+#     package, avoiding an on-boot source build.
 #   - Instance is intended for lab/demo and S3 Files validation workflows.
 # ================================================================================
 
 # ================================================================================
-# DATA: Canonical Ubuntu 24.04 AMI (SSM Parameter)
+# DATA: Amazon Linux 2023 AMI (SSM Parameter)
 # ================================================================================
 # Purpose:
-#   - Fetches the current stable Ubuntu 24.04 LTS AMI ID.
+#   - Fetches the current Amazon Linux 2023 AMI ID.
 #
 # Notes:
-#   - Parameter is maintained by Canonical.
-#   - Architecture: amd64
-#   - Virtualization: HVM
-#   - Storage: gp3-backed EBS
+#   - AL2023 is used for the gateway so amazon-efs-utils 3.x (which carries the
+#     mount.s3files helper) installs prebuilt via `dnf` — no source build.
+#   - Parameter is maintained by AWS. Architecture: x86_64, default kernel.
 # ================================================================================
-data "aws_ssm_parameter" "ubuntu_24_04" {
-  name = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
+data "aws_ssm_parameter" "al2023" {
+  name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 }
 
 # ================================================================================
-# DATA: Canonical Ubuntu 24.04 AMI Object
+# DATA: Amazon Linux 2023 AMI Object
 # ================================================================================
 # Purpose:
 #   - Resolves the full AMI object from the SSM-provided AMI ID.
 #
 # Notes:
-#   - Owner is restricted to Canonical to prevent untrusted AMI usage.
-#   - most_recent is retained as a safety guard.
+#   - Owner is restricted to Amazon to prevent untrusted AMI usage.
 # ================================================================================
-data "aws_ami" "ubuntu_ami" {
+data "aws_ami" "al2023_ami" {
   most_recent = true
-  owners      = ["099720109477"]
+  owners      = ["amazon"]
 
   filter {
     name   = "image-id"
-    values = [data.aws_ssm_parameter.ubuntu_24_04.value]
+    values = [data.aws_ssm_parameter.al2023.value]
   }
 }
 
@@ -57,7 +56,7 @@ data "aws_ami" "ubuntu_ami" {
 # RESOURCE: aws_instance.s3files_client_instance
 # ================================================================================
 # Purpose:
-#   - Provisions an Ubuntu 24.04 EC2 instance.
+#   - Provisions an Amazon Linux 2023 EC2 instance.
 #   - Mounts the S3 Files file system and joins the Active Directory domain.
 # ================================================================================
 resource "aws_instance" "s3files_client_instance" {
@@ -65,7 +64,7 @@ resource "aws_instance" "s3files_client_instance" {
   # ------------------------------------------------------------------------------
   # Amazon Machine Image
   # ------------------------------------------------------------------------------
-  ami = data.aws_ami.ubuntu_ami.id
+  ami = data.aws_ami.al2023_ami.id
 
   # ------------------------------------------------------------------------------
   # Instance Sizing

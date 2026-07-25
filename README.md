@@ -117,7 +117,7 @@ When the deployment completes, the following resources are created:
   - Security group allowing NFS traffic (TCP/2049) from the domain-joined clients
 
 - **Linux Client Instance:**
-  - Domain-joined Ubuntu EC2 instance with SSSD integration
+  - Domain-joined Amazon Linux 2023 EC2 instance with SSSD integration
   - Mounts the S3 Files file system directly via NFS at `/s3`
   - Re-exports `/s3` as a **Samba share**, enabling Windows clients to access the same S3-backed data
 
@@ -179,11 +179,10 @@ Administrator credentials are stored in the `admin_ad_credentials_s3` secret.
 
 When the Linux instance boots, the [userdata script](02-servers/scripts/userdata.sh) runs the following tasks:
 
-- Update OS and install required packages (including `amazon-efs-utils` for the `mount.s3files` helper)
-- Install AWS CLI
+- Install required packages via `dnf`, including `amazon-efs-utils` 3.x (prebuilt on AL2023) for the `mount.s3files` helper (SSM agent and AWS CLI v2 ship with AL2023)
 - Join the Active Directory domain with SSSD
 - Enable password authentication for AD users
-- Configure SSSD for AD integration
+- Configure SSSD for AD integration (POSIX ids, mkhomedir via authselect)
 - Grant sudo privileges to the `linux-admins` group
 - Mount the S3 Files file system at `/s3` and share it via Samba for Windows access
 
