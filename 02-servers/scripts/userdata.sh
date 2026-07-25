@@ -149,10 +149,12 @@ EOF
 cp /tmp/smb.conf /etc/samba/smb.conf
 rm /tmp/smb.conf
 
-head /etc/hostname -c 15 > /tmp/netbios-name
-value=$(</tmp/netbios-name)
-value=$(echo "$value" | tr -d '-' | tr '[:lower:]' '[:upper:]')
-export netbios="$${value^^}"
+# Derive the Samba NetBIOS name from the SHORT hostname. On AL2023 /etc/hostname
+# is the FQDN (ip-10-0-0-110.mcloud.mikecloud.com), so slicing raw characters
+# leaks the domain into the name. hostname -s drops everything past the first
+# dot; then strip dashes, uppercase, and cap at the 15-char NetBIOS limit.
+value=$(hostname -s | tr -d '-' | tr '[:lower:]' '[:upper:]')
+netbios="$${value:0:15}"
 sed -i "s/#netbios/netbios name=$netbios/" /etc/samba/smb.conf
 
 cat > /tmp/nsswitch.conf <<EOF
