@@ -101,6 +101,9 @@ resource "aws_iam_role_policy_attachment" "attach_secrets_policy" {
 #   - Lets the gateway instance mount and write the S3 Files file system.
 #
 # Notes:
+#   - ClientRootAccess is required because the gateway does root-owned setup
+#     (mkdir, chgrp, chmod) at the mount root. Without it, NFS root-squash maps
+#     root to the anonymous user and writes fail with "Permission denied".
 #   - Scoped to the file system ARN. If a client mount is denied, broaden the
 #     resource to "*" — client actions may authorize against a related ARN.
 # ================================================================================
@@ -114,7 +117,8 @@ resource "aws_iam_role_policy" "s3files_client" {
       Effect = "Allow"
       Action = [
         "s3files:ClientMount",
-        "s3files:ClientWrite"
+        "s3files:ClientWrite",
+        "s3files:ClientRootAccess"
       ]
       Resource = aws_s3files_file_system.s3fs.arn
     }]
