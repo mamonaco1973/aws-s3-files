@@ -95,6 +95,33 @@ resource "aws_iam_role_policy_attachment" "attach_secrets_policy" {
 }
 
 # ================================================================================
+# RESOURCE: aws_iam_role_policy.s3files_client
+# ================================================================================
+# Purpose:
+#   - Lets the gateway instance mount and write the S3 Files file system.
+#
+# Notes:
+#   - Scoped to the file system ARN. If a client mount is denied, broaden the
+#     resource to "*" — client actions may authorize against a related ARN.
+# ================================================================================
+resource "aws_iam_role_policy" "s3files_client" {
+  name = "s3files-client-mount"
+  role = aws_iam_role.ec2_secrets_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "s3files:ClientMount",
+        "s3files:ClientWrite"
+      ]
+      Resource = aws_s3files_file_system.s3fs.arn
+    }]
+  })
+}
+
+# ================================================================================
 # RESOURCE: aws_iam_instance_profile.ec2_secrets_profile
 # ================================================================================
 # Purpose:

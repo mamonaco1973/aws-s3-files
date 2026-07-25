@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==============================================================================
-# validate.sh - EFS + Active Directory Quick Start Validation
+# validate.sh - S3 Files + Active Directory Quick Start Validation
 # ------------------------------------------------------------------------------
 # Purpose:
 #   - Queries AWS for expected EC2 instances and prints quick-start endpoints.
@@ -8,7 +8,7 @@
 # Scope:
 #   - Looks up instances by Name tag:
 #       - windows-ad-admin
-#       - efs-client-gateway
+#       - s3-files-gateway
 #   - Prints public DNS names for fast copy/paste access.
 #
 # Fast-Fail Behavior:
@@ -43,14 +43,14 @@ get_public_dns_by_name_tag() {
 # Lookups
 # ------------------------------------------------------------------------------
 windows_dns="$(get_public_dns_by_name_tag "windows-ad-admin")"
-linux_dns="$(get_public_dns_by_name_tag "efs-client-gateway")"
+linux_dns="$(get_public_dns_by_name_tag "s3-files-gateway")"
  
 # ------------------------------------------------------------------------------
 # Quick Start Output
 # ------------------------------------------------------------------------------
 echo ""
 echo "============================================================================"
-echo "EFS + Active Directory Quick Start - Validation Output"
+echo "S3 Files + Active Directory Quick Start - Validation Output"
 echo "============================================================================"
 echo ""
  
@@ -63,7 +63,7 @@ fi
 if [ -n "${linux_dns}" ] && [ "${linux_dns}" != "None" ]; then
   echo "NOTE: Linux SSH Host FQDN:  ${linux_dns}"
 else
-  echo "WARN: efs-client-gateway not found or has no public DNS"
+  echo "WARN: s3-files-gateway not found or has no public DNS"
 fi
  
 echo ""

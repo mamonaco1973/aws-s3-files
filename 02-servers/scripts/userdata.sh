@@ -25,12 +25,13 @@ apt-get install -y \
   samba samba-common-bin samba-libs oddjob oddjob-mkhomedir packagekit \
   krb5-user nano vim nfs-common winbind libpam-winbind libnss-winbind stunnel4
 
-# EFS utils
+# amazon-efs-utils — ships the mount.s3files helper in v3.0.0+
 cd /tmp
 git clone https://github.com/mamonaco1973/amazon-efs-utils.git
 cd amazon-efs-utils
 dpkg -i amazon-efs-utils*.deb
-which mount.efs
+# Fail fast (ERR trap) if the packaged deb predates S3 Files support.
+which mount.s3files
 
 # AWS CLI v2
 cd /tmp
@@ -39,16 +40,17 @@ unzip -q awscliv2.zip
 ./aws/install
 rm -rf aws awscliv2.zip
 
-# EFS mounts
-mkdir -p /efs
-echo "${efs_mnt_server}:/ /efs efs _netdev,tls 0 0" >> /etc/fstab
+# S3 Files mount — the backing S3 bucket presented as NFS v4.2. The mount
+# helper resolves the in-VPC mount target from the file-system id, so no
+# DNS/IP is needed. nofail keeps boot resilient if the target lags on startup.
+# Note: user home directories are intentionally NOT placed on S3 Files — its
+# ~60s write aggregation and lock bypass make it unsuitable for live homes.
+mkdir -p /s3
+echo "${s3files_fs_id}:/ /s3 s3files _netdev,nofail 0 0" >> /etc/fstab
 systemctl daemon-reload
-mount /efs
+mount /s3
 
-mkdir -p /efs/home /efs/data
-echo "${efs_mnt_server}:/home /home efs _netdev,tls 0 0" >> /etc/fstab
-systemctl daemon-reload
-mount /home
+mkdir -p /s3/data
 
 # AD join
 secretValue=$(aws secretsmanager get-secret-value \
@@ -135,8 +137,8 @@ browseable = no
 read only = no
 inherit acls = yes
 
-[efs]
-path = /efs
+[s3]
+path = /s3
 read only = no
 guest ok = no
 EOF
@@ -174,11 +176,13 @@ su -c "exit" jsmith
 su -c "exit" akumar
 su -c "exit" edavis
 
-chgrp mcloud-users /efs /efs/data
-chmod 770 /efs /efs/data
+chgrp mcloud-users /s3 /s3/data
+chmod 770 /s3 /s3/data
 chmod 700 /home/*
 
-cd /efs
-git clone https://github.com/mamonaco1973/aws-efs.git
-chmod -R 775 aws-efs
-chgrp -R mcloud-users aws-efs
+# Seed the share with a repo — files land as objects in the backing bucket,
+# demonstrating that the S3 API and the NFS mount see the same data.
+cd /s3
+git clone https://github.com/mamonaco1973/aws-s3-files.git
+chmod -R 775 aws-s3-files
+chgrp -R mcloud-users aws-s3-files

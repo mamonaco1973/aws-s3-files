@@ -3,17 +3,18 @@
 #
 # Purpose:
 #   - Resolves the latest Canonical Ubuntu 24.04 AMI.
-#   - Provisions an EC2 instance that mounts Amazon EFS.
+#   - Provisions an EC2 instance that mounts the S3 Files file system.
 #   - Integrates the instance into the Active Directory domain.
+#   - Re-exports the S3 Files mount over SMB so Windows clients can reach it.
 #
 # Scope:
 #   - AMI discovery via SSM and EC2 metadata.
 #   - Linux EC2 instance provisioning.
-#   - EFS client configuration and AD integration.
+#   - S3 Files client configuration and AD integration.
 #
 # Notes:
 #   - AMI resolution is dynamic and always tracks Canonical’s latest release.
-#   - Instance is intended for lab/demo and EFS validation workflows.
+#   - Instance is intended for lab/demo and S3 Files validation workflows.
 # ================================================================================
 
 # ================================================================================
@@ -53,13 +54,13 @@ data "aws_ami" "ubuntu_ami" {
 }
 
 # ================================================================================
-# RESOURCE: aws_instance.efs_client_instance
+# RESOURCE: aws_instance.s3files_client_instance
 # ================================================================================
 # Purpose:
 #   - Provisions an Ubuntu 24.04 EC2 instance.
-#   - Mounts Amazon EFS and joins the Active Directory domain.
+#   - Mounts the S3 Files file system and joins the Active Directory domain.
 # ================================================================================
-resource "aws_instance" "efs_client_instance" {
+resource "aws_instance" "s3files_client_instance" {
 
   # ------------------------------------------------------------------------------
   # Amazon Machine Image
@@ -69,7 +70,7 @@ resource "aws_instance" "efs_client_instance" {
   # ------------------------------------------------------------------------------
   # Instance Sizing
   # ------------------------------------------------------------------------------
-  # Selected to balance cost and performance for EFS and AD testing.
+  # Selected to balance cost and performance for S3 Files and AD testing.
   instance_type = "t3.medium"
 
   # ------------------------------------------------------------------------------
@@ -93,32 +94,34 @@ resource "aws_instance" "efs_client_instance" {
   # User Data Bootstrap
   # ------------------------------------------------------------------------------
   # Performs initial configuration on first boot:
-  #   - Mounts the EFS file system.
+  #   - Mounts the S3 Files file system.
   #   - Joins the AD domain.
   #   - Applies group ownership and permissions.
   user_data = templatefile("./scripts/userdata.sh", {
-    admin_secret   = "admin_ad_credentials_efs"
-    domain_fqdn    = var.dns_zone
-    efs_mnt_server = aws_efs_mount_target.efs_mnt_1.dns_name
-    netbios        = var.netbios
-    realm          = var.realm
-    force_group    = "mcloud-users"
+    admin_secret  = "admin_ad_credentials_s3"
+    domain_fqdn   = var.dns_zone
+    s3files_fs_id = aws_s3files_file_system.s3fs.id
+    netbios       = var.netbios
+    realm         = var.realm
+    force_group   = "mcloud-users"
   })
 
   # ------------------------------------------------------------------------------
   # Tags
   # ------------------------------------------------------------------------------
   tags = {
-    Name = "efs-client-gateway"
+    Name = "s3-files-gateway"
   }
 
   # ------------------------------------------------------------------------------
   # Dependency Ordering
   # ------------------------------------------------------------------------------
-  # Ensures EFS and mount targets are available before instance bootstrap.
+  # Ensures the file system, its mount targets, and the client mount policy
+  # exist before the instance tries to mount on first boot.
   depends_on = [
-    aws_efs_file_system.efs,
-    aws_efs_mount_target.efs_mnt_1,
-    aws_efs_mount_target.efs_mnt_2
+    aws_s3files_file_system.s3fs,
+    aws_s3files_mount_target.s3fs_mnt_1,
+    aws_s3files_mount_target.s3fs_mnt_2,
+    aws_iam_role_policy.s3files_client
   ]
 }

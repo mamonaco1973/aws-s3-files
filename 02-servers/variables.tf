@@ -65,5 +65,5 @@ variable "netbios" {
 variable "vpc_name" {
   description = "Name for the VPC"
   type        = string
-  default     = "efs-vpc"
+  default     = "s3-files-vpc"
 }

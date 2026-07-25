@@ -21,7 +21,7 @@
 #   - Allows Remote Desktop (TCP/3389) access to Windows instances.
 # ================================================================================
 resource "aws_security_group" "ad_rdp_sg" {
-  name        = "efs-rdp-security-group"
+  name        = "s3-files-rdp-security-group"
   description = "Allow RDP access from the internet"
   vpc_id      = data.aws_vpc.ad_vpc.id
 
@@ -66,7 +66,7 @@ resource "aws_security_group" "ad_rdp_sg" {
 #   - Allows SMB (TCP/445) for AD/Samba testing scenarios.
 # ================================================================================
 resource "aws_security_group" "ad_ssh_sg" {
-  name        = "efs-ssh-security-group"
+  name        = "s3-files-ssh-security-group"
   description = "Allow SSH access from the internet"
   vpc_id      = data.aws_vpc.ad_vpc.id
 

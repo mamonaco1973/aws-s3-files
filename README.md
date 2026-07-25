@@ -1,62 +1,63 @@
-# AWS Mini Active Directory with EFS: NFS & Samba File Sharing
+# AWS Mini Active Directory with S3 Files: NFS & Samba File Sharing
 
-This project extends the original **AWS Mini Active Directory** lab by adding **Amazon Elastic File System (EFS)** as a shared storage backend. Instead of relying only on local disks or standalone file servers, this solution shows how to expose EFS storage in two ways:  
+This project extends the original **AWS Mini Active Directory** lab by using **Amazon S3 Files** as the shared storage backend. Amazon S3 Files (GA April 2026) presents an ordinary S3 bucket as a fully-featured, high-performance **NFS v4.2** file system — the bucket stays the source of truth while S3 Files, built on Amazon EFS under the hood, serves the active working set with low latency and syncs writes back to S3.
 
-1. **Direct NFS Mounts on Linux Clients** – Linux machines joined to the mini-AD domain mount EFS directly for scalable, POSIX-compliant storage.  
-2. **Samba File Server on Linux** – A Linux client mounts EFS locally and then exposes it via Samba, allowing Windows machines to access the same storage through familiar SMB shares.  
+This solution exposes that storage in two ways:
 
-The mini-AD environment (Samba 4 on Ubuntu) provides Active Directory authentication and DNS services. EFS provides scalable, managed NFS storage. Together, they enable a hybrid setup where both Linux and Windows domain-joined clients can consume cloud-native storage seamlessly.  
+1. **Direct NFS Mounts on Linux Clients** – Linux machines joined to the mini-AD domain mount the S3 Files file system directly for POSIX-style access to objects.
+2. **Samba File Server on Linux** – Because S3 Files is Linux/NFS only, a Linux client mounts it locally and re-exports it over **Samba/SMB**, letting domain-joined Windows machines reach the same S3-backed data.
 
+The mini-AD environment (Samba 4 on Ubuntu) provides Active Directory authentication and DNS. S3 Files provides file-system access to object storage. Together they enable a hybrid setup where both Linux and Windows domain-joined clients consume the same S3 bucket as files.
 
 ![AWS diagram](aws-efs.png)
 
-## Understanding Amazon Elastic File System (EFS)
+> **Note:** The architecture diagram and console screenshots are carried over from the EFS version and still need to be regenerated to reflect S3 Files.
 
-**Amazon Elastic File System (EFS)** is a fully managed, elastic, NFS-based file system designed to be shared across multiple Amazon EC2 instances and other AWS services. It provides a simple way to deliver shared storage that automatically grows and shrinks as files are added or removed, eliminating the need for capacity planning.
+## Understanding Amazon S3 Files
 
-### When to Use EFS
-EFS is a good fit for:
-- **Shared File Storage** – When multiple Linux or Windows servers need to access the same dataset simultaneously.  
-- **Lift-and-Shift Applications** – Legacy applications that expect a POSIX-compliant filesystem but need cloud scalability.  
-- **Content Management & Web Serving** – Centralized storage for web content, media files, or shared project data.  
-- **Big Data & Analytics** – Shared datasets for parallel processing across many compute nodes.  
-- **Home Directories** – User home directories in multi-user environments, accessible from any server.  
+**Amazon S3 Files** is a managed shared file system that gives file-based applications direct NFS access to data stored in a standard S3 bucket — with no download-process-upload cycle and no data duplication. Both the NFS mount and the S3 API operate on the same objects simultaneously, with S3 remaining the authoritative store.
+
+### How It Works
+- You create an **S3 Files file system** over a **versioned** S3 bucket, then place a **mount target** (an NFS endpoint / ENI) in each subnet.
+- Clients mount it with the `mount.s3files` helper (shipped in **amazon-efs-utils 3.0.0+**) using the file-system id: `mount -t s3files fs-xxxx:/ /mnt`.
+- S3 Files is **built on Amazon EFS**, which intelligently caches the active working set on high-performance storage. Writes are aggregated (~60s) and synced back to S3.
+
+### When to Use S3 Files
+- **File apps over object data** – Legacy or POSIX-expecting apps that need to read/write data that lives in S3.
+- **ML / analytics pipelines** – Mount a bucket of training data or artifacts as files without copying it first.
+- **Shared datasets** – Many Linux compute resources (EC2, Lambda, ECS, EKS, Fargate, Batch) reading the same S3 data as a filesystem.
 
 ### Key Benefits
-- **Elastic & Pay-As-You-Go** – Storage scales automatically with usage.  
-- **Multi-AZ Availability** – Data is redundantly stored across multiple Availability Zones.  
-- **Managed Service** – No patching, backups, or infrastructure management required.  
-- **High Throughput & IOPS** – Supports workloads that require parallel access to files.  
+- **S3 economics, file access** – Data stays in S3; up to ~90% lower cost than cycling data between S3 and a separate file system.
+- **No capacity planning** – Elastic, pay-as-you-go, no provisioned throughput.
+- **High concurrency** – Up to 25,000 simultaneous connections and multi-TB/s aggregate read throughput per bucket.
+- **Dual access** – The same objects are reachable via NFS and the S3 API at once.
 
-### Limitations of EFS
+### Limitations of S3 Files
 
-While powerful, EFS has some caveats:
+- **Linux / NFS only** – SMB is not supported. Windows clients need a gateway (as demonstrated here) or FSx.
+- **Eventual write sync** – File-system writes aggregate for up to ~60 seconds before appearing via the S3 API.
+- **Locks bypassed by S3 API** – NFS file locks are ignored by direct S3 operations; avoid concurrent write paths to the same object.
+- **Conflict handling** – The S3 bucket is the source of truth; conflicting file-system changes are moved to a `.s3files-lost+found-{file-system-id}` directory.
+- **Versioning required** – The backing bucket must have versioning enabled.
+- **Not for live home directories** – The write-aggregation and lock semantics make it a poor fit for interactive home dirs (this lab keeps `/home` local for that reason).
 
-- **Linux-Centric** – Native support is for NFS (Linux/Unix). Windows clients require Samba or an intermediate file server (as demonstrated in this project).  
-- **Latency** – Network-based storage can introduce higher latency compared to local instance storage or EBS volumes.  
-- **Throughput Modes** – Performance depends on selected mode (bursting, provisioned, or elastic), and heavy workloads may require tuning.  
-- **Per-Instance Connection Scaling** – Each EC2 instance maintains a limited number of EFS client connections. Performance can degrade if too many processes or threads on a single node try to access EFS concurrently. Scaling out across multiple instances often delivers better results than scaling up one node.  
-- **Cost** – Pay-per-GB pricing is higher than S3 or EBS in many cases; frequent access across AZs can add data transfer charges.  
-- **No Built-in File-Level Features** – Missing features like Windows ACLs, quotas, or DFS namespaces (available in FSx for Windows File Server or FSx for NetApp ONTAP).  
-.  
-
-**Tip:** Use **EFS** when you need scalable, shared storage that behaves like a standard filesystem. For Windows-native environments with advanced SMB features, consider **FSx for Windows File Server**. For enterprise NAS capabilities such as snapshots, cloning, and multiprotocol support, consider **FSx for NetApp ONTAP**.
+**Tip:** Use **S3 Files** when you want file-system access to data that should live in S3. For Windows-native SMB with ACLs and DFS, consider **FSx for Windows File Server**. For enterprise NAS with snapshots, cloning, and automatic S3 tiering, consider **FSx for NetApp ONTAP**.
 
 ## AWS Storage Cost Comparison (1 TB / month, us-east-1)
 
-| Service        | Cost per GB-month | 1 TB Cost (approx) | Notes |
-|----------------|------------------:|-------------------:|-------|
-| **S3 Standard** | $0.023            | **$23.50**         | Cheapest, object storage, request + transfer fees apply |
-| **EBS gp3**     | $0.080            | **$81.92**         | Block storage, single-instance use (can be Multi-Attach with limits) |
-| **EFS Standard**| $0.300            | **$307.20**        | Shared NFS file system, elastic scaling across AZs |
-| **EFS IA**      | $0.025            | **$25.60**         | Cheaper tier, but retrieval charges apply |
-
+| Service          | Cost per GB-month | 1 TB Cost (approx) | Notes |
+|------------------|------------------:|-------------------:|-------|
+| **S3 Standard**  | $0.023            | **$23.50**         | Object storage; the backing store for S3 Files |
+| **S3 Files**     | S3 storage + usage-based file-system fee | **varies** | File access billed on top of S3 storage; no provisioned capacity |
+| **EBS gp3**      | $0.080            | **$81.92**         | Block storage, single-instance use |
+| **EFS Standard** | $0.300            | **$307.20**        | Shared NFS file system, elastic scaling across AZs |
 
 ## Prerequisites
 
 * [An AWS Account](https://aws.amazon.com/console/)
-* [Install AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) 
-* [Install Latest Terraform](https://developer.hashicorp.com/terraform/install)
+* [Install AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) — **v2.34 or later** (S3 Files support)
+* [Install Latest Terraform](https://developer.hashicorp.com/terraform/install) — with **AWS provider >= 6.40** (for the `aws_s3files_*` resources)
 
 If this is your first time watching our content, we recommend starting with this video: [AWS + Terraform: Easy Setup](https://youtu.be/BCMQo0CB9wk). It provides a step-by-step guide to properly configure Terraform, Packer, and the AWS CLI.
 
@@ -65,8 +66,8 @@ If this is your first time watching our content, we recommend starting with this
 ## Download this Repository
 
 ```bash
-git clone https://github.com/mamonaco1973/aws-efs.git
-cd aws-efs
+git clone https://github.com/mamonaco1973/aws-s3-files.git
+cd aws-s3-files
 ```
 
 ---
@@ -76,7 +77,7 @@ cd aws-efs
 Run [check_env](check_env.sh) to validate your environment, then run [apply](apply.sh) to provision the infrastructure.
 
 ```bash
-develop-vm:~/aws-efs$ ./apply.sh
+develop-vm:~/aws-s3-files$ ./apply.sh
 NOTE: Validating that required commands are found in your PATH.
 NOTE: aws is found in the current PATH.
 NOTE: terraform is found in the current PATH.
@@ -85,16 +86,7 @@ NOTE: Checking AWS cli connection.
 NOTE: Successfully logged into AWS.
 Initializing the backend...
 Initializing provider plugins...
-- Reusing previous version of hashicorp/random from the dependency lock file
-- Reusing previous version of hashicorp/aws from the dependency lock file
-- Using previously-installed hashicorp/random v3.7.1
-- Using previously-installed hashicorp/aws v5.89.0
-
 Terraform has been successfully initialized!
-
-You may now begin working with Terraform. Try running "terraform plan" to see
-any changes that are required for your infrastructure. All Terraform commands
-should now work.
 ```
 
 ---
@@ -103,43 +95,42 @@ should now work.
 
 When the deployment completes, the following resources are created:
 
-- **Networking:**  
-  - A VPC with public and private subnets  
-  - Internet Gateway and NAT Gateway for controlled outbound access  
-  - Route tables configured for both public and private subnets  
+- **Networking:**
+  - A VPC with public and private subnets
+  - Internet Gateway and NAT Gateway for controlled outbound access
+  - Route tables configured for both public and private subnets
 
-- **Security & IAM:**  
-  - Security groups for the domain controller, Linux client, Windows client, and EFS mount targets  
-  - IAM roles and policies allowing EC2 instances to use AWS Systems Manager and mount EFS  
-  - Secrets stored in AWS Secrets Manager for AD administrator and test user credentials  
+- **Security & IAM:**
+  - Security groups for the domain controller, Linux client, Windows client, and S3 Files mount targets
+  - An IAM **service role** assumed by S3 Files to access the bucket and manage its EventBridge change rule
+  - IAM roles and policies allowing EC2 to use AWS Systems Manager, read secrets, and **client-mount** the S3 Files file system
+  - Secrets stored in AWS Secrets Manager for AD administrator and test user credentials
 
-- **Active Directory Server:**  
-  - Ubuntu EC2 instance running Samba 4 as a Domain Controller and DNS server  
-  - Configured Kerberos realm and NetBIOS name  
-  - Administrator credentials managed in AWS Secrets Manager  
+- **Active Directory Server:**
+  - Ubuntu EC2 instance running Samba 4 as a Domain Controller and DNS server
+  - Configured Kerberos realm and NetBIOS name
+  - Administrator credentials managed in AWS Secrets Manager
 
-- **Amazon EFS:**  
-  - Elastic File System provisioned with mount targets in each private subnet  
-  - Security group allowing NFS traffic (TCP/2049) from Linux and Windows servers  
-  - Configured for multi-AZ availability and automatic scaling  
+- **Amazon S3 Files:**
+  - A versioned S3 bucket backing the file system
+  - An S3 Files file system with NFS mount targets in each private subnet
+  - Security group allowing NFS traffic (TCP/2049) from the domain-joined clients
 
-- **Linux Client Instance:**  
-  - Domain-joined Ubuntu EC2 instance with SSSD integration  
-  - Mounts EFS directly via NFS for testing POSIX file access  
-  - Configured to expose the EFS mount as a **Samba share**, enabling Windows clients to access it  
+- **Linux Client Instance:**
+  - Domain-joined Ubuntu EC2 instance with SSSD integration
+  - Mounts the S3 Files file system directly via NFS at `/s3`
+  - Re-exports `/s3` as a **Samba share**, enabling Windows clients to access the same S3-backed data
 
-- **Windows Client Instance:**  
-  - Domain-joined Windows Server EC2 instance  
-  - Can access EFS storage via the Samba share hosted on the Linux client  
-  - Supports domain-authenticated users for SMB access  
-
+- **Windows Client Instance:**
+  - Domain-joined Windows Server EC2 instance
+  - Maps drive `Z:` to the Samba `s3` share hosted on the Linux client
+  - Supports domain-authenticated users for SMB access
 
 ---
 
 ### Users and Groups
 
 As part of this project, when the domain controller is provisioned, a set of sample **users** and **groups** are automatically created through Terraform-provisioned scripts running on the mini-ad server. These resources are intended for **testing and demonstration purposes**, showcasing how to automate user and group provisioning in a self-managed Active Directory environment.
-
 
 #### Groups Created
 
@@ -152,7 +143,7 @@ As part of this project, when the domain controller is provisioned, a set of sam
 
 #### Users Created and Group Memberships
 
-| Username | Full Name   | uidNumber | gidNumber | Groups Joined                    |
+| Username | Full Name   | uidNumber | gidNumber | Groups Joined                     |
 |----------|-------------|-----------|-----------|-----------------------------------|
 | jsmith   | John Smith  | 10001     | 10001     | mcloud-users, us, linux-admins    |
 | edavis   | Emily Davis | 10002     | 10001     | mcloud-users, us                  |
@@ -167,33 +158,34 @@ The **`uidNumber`** (User ID) and **`gidNumber`** (Group ID) attributes are crit
 
 ---
 
-### Log into Windows Instance  
+### Log into Windows Instance
 
-When the Windows instance boots, the [userdata script](02-servers/scripts/userdata.ps1) executes the following tasks:  
+When the Windows instance boots, the [userdata script](02-servers/scripts/userdata.ps1) executes the following tasks:
 
-- Install Active Directory Administrative Tools  
-- Install AWS CLI  
-- Join EC2 instance to Active Directory  
-- Grant RDP access to domain users  
-- Perform a final system reboot  
+- Install Active Directory Administrative Tools
+- Install AWS CLI
+- Join EC2 instance to Active Directory
+- Grant RDP access to domain users
+- Map drive `Z:` to the Samba `s3` share
+- Perform a final system reboot
 
-Administrator credentials are stored in the `admin_ad_credentials` secret.
+Administrator credentials are stored in the `admin_ad_credentials_s3` secret.
 
 ![Windows EC2 Instance](windows.png)
 
 ---
 
-### Log into Linux Instance  
+### Log into Linux Instance
 
-When the Linux instance boots, the [userdata script](02-servers/scripts/userdata.sh) runs the following tasks:  
+When the Linux instance boots, the [userdata script](02-servers/scripts/userdata.sh) runs the following tasks:
 
-- Update OS and install required packages  
-- Install AWS CLI  
-- Join the Active Directory domain with SSSD  
-- Enable password authentication for AD users  
-- Configure SSSD for AD integration  
-- Grant sudo privileges to the `linux-admins` group  
-- Sets up Samba and shares `/efs` for Windows access to EFS
+- Update OS and install required packages (including `amazon-efs-utils` for the `mount.s3files` helper)
+- Install AWS CLI
+- Join the Active Directory domain with SSSD
+- Enable password authentication for AD users
+- Configure SSSD for AD integration
+- Grant sudo privileges to the `linux-admins` group
+- Mount the S3 Files file system at `/s3` and share it via Samba for Windows access
 
 Linux user credentials are stored as secrets.
 
@@ -201,12 +193,12 @@ Linux user credentials are stored as secrets.
 
 ---
 
-### Clean Up Infrastructure  
+### Clean Up Infrastructure
 
-When you are finished testing, you can remove all provisioned resources with:  
+When you are finished testing, you can remove all provisioned resources with:
 
 ```bash
 ./destroy.sh
 ```
 
-This will use Terraform to delete the VPC, EC2 instances, IAM roles, security groups, and any other infrastructure created by the project. Secrets stored in AWS Secrets Manager will also be deleted unless retention policies are configured.
+This will use Terraform to delete the VPC, EC2 instances, IAM roles, security groups, the S3 Files file system, and the backing S3 bucket. Secrets stored in AWS Secrets Manager are force-deleted. Note that if the backing bucket contains objects, you may need to empty it before the bucket can be destroyed.

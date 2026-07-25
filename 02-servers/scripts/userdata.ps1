@@ -57,7 +57,7 @@ try {
     Write-Output "Creating persistent drive mapping (Z:)"
     $startup   = "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp"
     $batchFile = Join-Path $startup "map_drives.bat"
-    $command   = "net use Z: \\${samba_server}\efs /persistent:yes"
+    $command   = "net use Z: \\${samba_server}\s3 /persistent:yes"
     Set-Content -Path $batchFile -Value $command -Encoding ASCII
     Write-Output "Drive mapping script created"
 

@@ -37,8 +37,8 @@ resource "random_password" "admin_password" {
 # Secrets Manager secret for AD Administrator credentials
 # ------------------------------------------------------------------------------
 resource "aws_secretsmanager_secret" "admin_secret" {
-  name        = "admin_ad_credentials_efs"
-  description = "AD Administrator Credentials (EFS)"
+  name        = "admin_ad_credentials_s3"
+  description = "AD Administrator Credentials (S3 Files)"
 
   lifecycle {
     prevent_destroy = false
@@ -73,8 +73,8 @@ resource "random_password" "jsmith_password" {
 }
 
 resource "aws_secretsmanager_secret" "jsmith_secret" {
-  name        = "jsmith_ad_credentials_efs"
-  description = "John Smith AD Credentials (EFS)"
+  name        = "jsmith_ad_credentials_s3"
+  description = "John Smith AD Credentials (S3 Files)"
 
   lifecycle {
     prevent_destroy = false
@@ -102,8 +102,8 @@ resource "random_password" "edavis_password" {
 }
 
 resource "aws_secretsmanager_secret" "edavis_secret" {
-  name        = "edavis_ad_credentials_efs"
-  description = "Emily Davis AD Credentials (EFS)"
+  name        = "edavis_ad_credentials_s3"
+  description = "Emily Davis AD Credentials (S3 Files)"
 
   lifecycle {
     prevent_destroy = false
@@ -131,8 +131,8 @@ resource "random_password" "rpatel_password" {
 }
 
 resource "aws_secretsmanager_secret" "rpatel_secret" {
-  name        = "rpatel_ad_credentials_efs"
-  description = "Raj Patel AD Credentials (EFS)"
+  name        = "rpatel_ad_credentials_s3"
+  description = "Raj Patel AD Credentials (S3 Files)"
 
   lifecycle {
     prevent_destroy = false
@@ -160,8 +160,8 @@ resource "random_password" "akumar_password" {
 }
 
 resource "aws_secretsmanager_secret" "akumar_secret" {
-  name        = "akumar_ad_credentials_efs"
-  description = "Amit Kumar AD Credentials (EFS)"
+  name        = "akumar_ad_credentials_s3"
+  description = "Amit Kumar AD Credentials (S3 Files)"
 
   lifecycle {
     prevent_destroy = false
