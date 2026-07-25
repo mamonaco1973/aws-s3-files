@@ -19,6 +19,13 @@
 # ================================================================================
  
 # ------------------------------------------------------------------------------
+# Strict mode — WITHOUT `-e`. Teardown must continue past individual failures
+# (already-deleted secrets, the tolerated first-pass destroy, force-delete),
+# so `-e` is intentionally omitted. `-u`/`-o pipefail` still catch typos.
+# ------------------------------------------------------------------------------
+set -uo pipefail
+
+# ------------------------------------------------------------------------------
 # Configuration
 # ------------------------------------------------------------------------------
 export AWS_DEFAULT_REGION="us-east-1"
