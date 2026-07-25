@@ -38,7 +38,7 @@ module "mini_ad" {
   # ------------------------------------------------------------------------------
   # Authentication and User Provisioning
   # ------------------------------------------------------------------------------
-  ad_admin_password = random_password.admin_password.result
+  ad_admin_password = local.admin_ad_password
   user_base_dn      = var.user_base_dn
   users_json        = local.users_json
 

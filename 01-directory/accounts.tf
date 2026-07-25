@@ -33,6 +33,14 @@ resource "random_password" "admin_password" {
   override_special = "_-" # Restrict special characters to safe set
 }
 
+locals {
+  # The mini-AD module rejects an admin password that starts with a dash, and
+  # random_password can't pin the first character. Prefix a fixed safe char so
+  # a leading "-" is impossible. Both consumers (module + Secrets Manager) use
+  # this value so the stored secret always matches the real AD password.
+  admin_ad_password = "A${random_password.admin_password.result}"
+}
+
 # ------------------------------------------------------------------------------
 # Secrets Manager secret for AD Administrator credentials
 # ------------------------------------------------------------------------------
@@ -53,7 +61,7 @@ resource "aws_secretsmanager_secret_version" "admin_secret_version" {
 
   secret_string = jsonencode({
     username = "${var.netbios}\\Admin"
-    password = random_password.admin_password.result
+    password = local.admin_ad_password
   })
 }
 

@@ -40,6 +40,11 @@ resource "random_id" "bucket_suffix" {
 resource "aws_s3_bucket" "s3files" {
   bucket = "mcloud-s3files-${random_id.bucket_suffix.hex}"
 
+  # The gateway seeds the share with objects, and versioning keeps old
+  # versions — force_destroy lets `terraform destroy` empty the bucket
+  # (all objects and versions) instead of failing with BucketNotEmpty.
+  force_destroy = true
+
   tags = {
     Name = "mcloud-s3files"
   }
