@@ -30,16 +30,38 @@ export AWS_DEFAULT_REGION="us-east-1"
 #   - Dependent servers must be destroyed before AD to avoid teardown
 #     failures and dependency issues.
 # ------------------------------------------------------------------------------
-echo "NOTE: Destroying EC2 server instances..."
- 
+echo "NOTE: Destroying EC2 server instances and S3 Files storage..."
+
 cd 02-servers || { echo "ERROR: Directory 02-servers not found"; exit 1; }
- 
+
 # Reinitialize Terraform to ensure providers and backend are available.
 terraform init
- 
-# Destroy all server resources without interactive confirmation.
+
+# First pass: tears down instances and mount targets. This can fail on the
+# S3 Files file system, which returns a terminal ConflictException while it
+# still has data pending export to S3 (the provider has no force_delete arg).
+# Tolerate that failure so we can force-delete below.
+terraform destroy -auto-approve || true
+
+# If the file system survived, force-delete it via the API (bypasses the
+# pending-export wait — safe because the backing bucket is torn down too),
+# drop it from state, then let the second pass finish the job.
+fs_id=$(terraform show -json 2>/dev/null \
+  | jq -r '.values.root_module.resources[]?
+           | select(.type=="aws_s3files_file_system") | .values.id' \
+  | head -n1)
+
+if [ -n "$fs_id" ] && [ "$fs_id" != "null" ]; then
+  echo "NOTE: Force-deleting S3 Files file system $fs_id..."
+  aws s3files delete-file-system --file-system-id "$fs_id" --force-delete || true
+  sleep 60  # let the file system finish deleting before the retry
+  terraform state rm aws_s3files_file_system.s3fs || true
+fi
+
+# Second pass: removes the bucket (force_destroy) and anything left over.
+# No-op if the first pass already succeeded.
 terraform destroy -auto-approve
- 
+
 cd .. || exit
  
 # ------------------------------------------------------------------------------

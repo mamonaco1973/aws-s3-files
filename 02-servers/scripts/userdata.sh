@@ -190,7 +190,11 @@ chmod 700 /home/*
 
 # Seed the share with a repo — files land as objects in the backing bucket,
 # demonstrating that the S3 API and the NFS mount see the same data.
+# Guard the clone: the bucket persists across instance replacements, so on a
+# reboot/replace /s3/aws-s3-files already exists and a bare clone would abort.
 cd /s3
-git clone https://github.com/mamonaco1973/aws-s3-files.git
+if [ ! -d aws-s3-files/.git ]; then
+  git clone https://github.com/mamonaco1973/aws-s3-files.git
+fi
 chmod -R 775 aws-s3-files
 chgrp -R mcloud-users aws-s3-files
