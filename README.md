@@ -1,203 +1,196 @@
-# AWS Mini Active Directory with S3 Files: NFS & Samba File Sharing
+# Amazon S3 Files with Mini Active Directory: NFS and Samba File Sharing
 
-This project extends the original **AWS Mini Active Directory** lab by using **Amazon S3 Files** as the shared storage backend. Amazon S3 Files (GA April 2026) presents an ordinary S3 bucket as a fully-featured, high-performance **NFS v4.2** file system — the bucket stays the source of truth while S3 Files, built on Amazon EFS under the hood, serves the active working set with low latency and syncs writes back to S3.
+A variant of the [AWS Mini Active Directory](https://github.com/mamonaco1973/aws-mini-ad)
+file-sharing lab ([aws-efs](https://github.com/mamonaco1973/aws-efs)) that
+uses **Amazon S3 Files** for storage. S3 Files presents an ordinary,
+versioned S3 bucket as an **NFS 4.2** file system: the bucket stays the
+source of truth, while S3 Files (built on Amazon EFS) serves the working set
+and syncs writes back to S3.
 
-This solution exposes that storage in two ways:
+A domain-joined Linux gateway mounts the file system for `/s3` and `/home`
+and re-exports `/s3` over **Samba**, because S3 Files is NFS only; a
+domain-joined Windows host maps that share as `Z:`. Users sign in to both
+with their **mini-AD** accounts.
 
-1. **Direct NFS Mounts on Linux Clients** – Linux machines joined to the mini-AD domain mount the S3 Files file system directly for POSIX-style access to objects.
-2. **Samba File Server on Linux** – Because S3 Files is Linux/NFS only, a Linux client mounts it locally and re-exports it over **Samba/SMB**, letting domain-joined Windows machines reach the same S3-backed data.
+![The S3 Files mounts on the Linux gateway](linux.png)
 
-The mini-AD environment (Samba 4 on Ubuntu) provides Active Directory authentication and DNS. S3 Files provides file-system access to object storage. Together they enable a hybrid setup where both Linux and Windows domain-joined clients consume the same S3 bucket as files.
+| Piece | Where | Role |
+|---|---|---|
+| **mcloud-s3files** | S3 Files | file system over the bucket, using the `s3files-service-*` role; mount targets in `vm-subnet-1` and `ad-subnet` |
+| **mcloud-s3files-&lt;suffix&gt;** | S3 | the backing bucket; versioned, public access blocked, `force_destroy` |
+| **s3files-service-&lt;id&gt;** | IAM | assumed by `elasticfilesystem.amazonaws.com`; reads and writes the bucket and manages its EventBridge change rule |
+| **s3-files-gateway** | `vm-subnet-1` (public), `t3.medium` | Amazon Linux 2023; joined to AD (SSSD plus winbind); mounts `fs:/` at `/s3` and `fs:/home` at `/home`; shares `/s3` over Samba as `[s3]` |
+| **windows-ad-admin** | `vm-subnet-1` (public), `t3.medium` | Windows Server 2022; joined to AD; RSAT; maps `\\s3-files-gateway\s3` as `Z:` |
+| **mini-AD** | `ad-subnet` (private) | [`module-aws-mini-ad`](https://github.com/mamonaco1973/module-aws-mini-ad) Samba DC for `mcloud.mikecloud.com` (`MCLOUD`) |
+| **Instance role** | IAM | SSM, read on `admin_ad_credentials_s3`, and `s3files:ClientMount`, `ClientWrite` and `ClientRootAccess` on the file system |
+| **Secrets Manager** | us-east-1 | `admin_ad_credentials_s3` and one `*_ad_credentials_s3` secret per user |
+| **ad-vpc** | `10.0.0.0/24` | public `vm-subnet-1` (`use1-az6`), private `ad-subnet` (`use1-az4`), NAT gateway |
 
-![AWS diagram](aws-s3-files.png)
+## Architecture
 
-> **Note:** The architecture diagram and console screenshots are carried over from the EFS version and still need to be regenerated to reflect S3 Files.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="architecture-dark.svg">
+  <img alt="An SSH client reaches s3-files-gateway, an Amazon Linux 2023 instance, and an RDP client reaches windows-ad-admin, a Windows Server 2022 instance; both are joined to a Samba mini-AD domain controller in a private subnet behind a NAT gateway and read the join password from Secrets Manager. The gateway mounts an Amazon S3 Files file system over NFS at /s3 and /home and shares /s3 over Samba; the Windows host maps that share as drive Z:. S3 Files serves the data from a versioned S3 bucket and syncs writes back to it." src="architecture-light.svg">
+</picture>
+
+Regenerate with `python3 make_diagram.py`. The gateway also reads the join
+password from Secrets Manager; that line is left off the diagram.
+
+- **`01-directory/`**: the VPC, subnets and NAT gateway, the AD passwords,
+  and the mini-AD module with users and groups from
+  `scripts/users.json.template`.
+- **`02-servers/`**: the bucket, the S3 Files file system, its role and
+  mount targets (`s3-files.tf`), the two instances and their user data, the
+  instance role and the security groups.
 
 ## Understanding Amazon S3 Files
 
-**Amazon S3 Files** is a managed shared file system that gives file-based applications direct NFS access to data stored in a standard S3 bucket — with no download-process-upload cycle and no data duplication. Both the NFS mount and the S3 API operate on the same objects simultaneously, with S3 remaining the authoritative store.
+**Amazon S3 Files** gives file-based applications NFS access to data in a
+standard S3 bucket, with no download-process-upload cycle and no second
+copy of the data.
 
-### How It Works
-- You create an **S3 Files file system** over a **versioned** S3 bucket, then place a **mount target** (an NFS endpoint / ENI) in each subnet.
-- Clients mount it with the `mount.s3files` helper (shipped in **amazon-efs-utils 3.0.0+**) using the file-system id: `mount -t s3files fs-xxxx:/ /mnt`.
-- S3 Files is **built on Amazon EFS**, which intelligently caches the active working set on high-performance storage. Writes are aggregated (~60s) and synced back to S3.
+- You create a file system over a **versioned** bucket and put a **mount
+  target** in each subnet that needs it.
+- Clients mount it with the `mount.s3files` helper from
+  **amazon-efs-utils 3.0 or later**: `mount -t s3files fs-xxxx:/ /mnt`.
+- S3 Files caches the active working set on EFS-backed storage. Writes are
+  aggregated (around 60 seconds) and synced back to S3.
 
-### When to Use S3 Files
-- **File apps over object data** – Legacy or POSIX-expecting apps that need to read/write data that lives in S3.
-- **ML / analytics pipelines** – Mount a bucket of training data or artifacts as files without copying it first.
-- **Shared datasets** – Many Linux compute resources (EC2, Lambda, ECS, EKS, Fargate, Batch) reading the same S3 data as a filesystem.
+**Good fits:** file applications that need data that lives in S3; ML and
+analytics pipelines that read a bucket as files without copying it first;
+many Linux compute resources (EC2, Lambda, ECS, EKS, Fargate, Batch)
+sharing one dataset.
 
-### Key Benefits
-- **S3 economics, file access** – Data stays in S3; up to ~90% lower cost than cycling data between S3 and a separate file system.
-- **No capacity planning** – Elastic, pay-as-you-go, no provisioned throughput.
-- **High concurrency** – Up to 25,000 simultaneous connections and multi-TB/s aggregate read throughput per bucket.
-- **Dual access** – The same objects are reachable via NFS and the S3 API at once.
+**Benefits:** data stays at S3 prices with no capacity planning or
+provisioned throughput; high concurrency; the same objects are reachable
+over NFS and the S3 API at once.
 
-### Limitations of S3 Files
+**Limits:**
 
-- **Linux / NFS only** – SMB is not supported. Windows clients need a gateway (as demonstrated here) or FSx.
-- **Eventual write sync** – File-system writes aggregate for up to ~60 seconds before appearing via the S3 API.
-- **Locks bypassed by S3 API** – NFS file locks are ignored by direct S3 operations; avoid concurrent write paths to the same object.
-- **Conflict handling** – The S3 bucket is the source of truth; conflicting file-system changes are moved to a `.s3files-lost+found-{file-system-id}` directory.
-- **Versioning required** – The backing bucket must have versioning enabled.
-- **Not for live home directories** – The write-aggregation and lock semantics make it a poor fit for interactive home dirs (this lab keeps `/home` local for that reason).
+- **NFS only.** No SMB, so Windows clients need a gateway like this one, or
+  FSx.
+- **Eventual sync.** File-system writes can take about a minute to show up
+  through the S3 API.
+- **Locks.** NFS locks don't apply to direct S3 API writes, so avoid two
+  write paths to the same object.
+- **Conflicts.** The bucket wins; conflicting file-system changes move to a
+  `.s3files-lost+found-<file-system-id>` directory.
+- **Versioning** must be on for the bucket.
 
-**Tip:** Use **S3 Files** when you want file-system access to data that should live in S3. For Windows-native SMB with ACLs and DFS, consider **FSx for Windows File Server**. For enterprise NAS with snapshots, cloning, and automatic S3 tiering, consider **FSx for NetApp ONTAP**.
+For Windows-native SMB with ACLs and DFS, use **FSx for Windows File
+Server**; for a plain shared NFS file system, **EFS**.
 
-## AWS Storage Cost Comparison (1 TB / month, us-east-1)
+| Service | Cost per GB-month | 1 TB (approx.) | Notes |
+|---|--:|--:|---|
+| **S3 Standard** | $0.023 | $23.50 | the backing store for S3 Files |
+| **S3 Files** | S3 storage plus usage | varies | file access is billed on top of S3 storage |
+| **EBS gp3** | $0.080 | $81.92 | block storage for one instance |
+| **EFS Standard** | $0.300 | $307.20 | shared NFS, elastic across AZs |
 
-| Service          | Cost per GB-month | 1 TB Cost (approx) | Notes |
-|------------------|------------------:|-------------------:|-------|
-| **S3 Standard**  | $0.023            | **$23.50**         | Object storage; the backing store for S3 Files |
-| **S3 Files**     | S3 storage + usage-based file-system fee | **varies** | File access billed on top of S3 storage; no provisioned capacity |
-| **EBS gp3**      | $0.080            | **$81.92**         | Block storage, single-instance use |
-| **EFS Standard** | $0.300            | **$307.20**        | Shared NFS file system, elastic scaling across AZs |
+## How the gateway starts
+
+`userdata.sh`, on the Linux gateway:
+
+1. Installs realmd, SSSD, Samba and winbind, and `amazon-efs-utils` (which
+   provides `mount.s3files`); sets SELinux to permissive.
+2. Mounts the file system's root at `/s3`, creates `/s3/home` and
+   `/s3/data`, and mounts `/s3/home` at `/home`. Both go in `/etc/fstab`.
+3. Joins the domain with `realm join --membership-software=samba`; SSSD
+   uses short names and the POSIX IDs from AD, with mkhomedir.
+4. Writes `smb.conf` with `[homes]` and `[s3]` (files group-owned by
+   `mcloud-users`), gives `linux-admins` sudo, and turns on SSH password
+   sign-in.
+5. Makes `/s3` and `/s3/data` `770` for `mcloud-users`, home directories
+   `700`, and clones this repository into `/s3`.
+
+The Windows host installs RSAT and the AWS CLI, joins the domain, lets
+`mcloud-users` use RDP, maps `Z:` to the gateway's `s3` share and reboots.
+
+## Users and groups
+
+| User | uidNumber | Groups |
+|---|---|---|
+| jsmith | 10001 | mcloud-users, us, linux-admins, Domain Admins |
+| edavis | 10002 | mcloud-users, us |
+| rpatel | 10003 | mcloud-users, india, linux-admins, Domain Admins |
+| akumar | 10004 | mcloud-users, india |
+
+| Group | gidNumber |
+|---|---|
+| mcloud-users | 10001 (every user's primary group) |
+| us | 10002 |
+| india | 10003 |
+| linux-admins | 10004 |
+
+Linux reads these through SSSD using `uidNumber` and `gidNumber`, so they
+must be set on every account.
 
 ## Prerequisites
 
 * [An AWS Account](https://aws.amazon.com/console/)
-* [Install AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) — **v2.34 or later** (S3 Files support)
-* [Install Latest Terraform](https://developer.hashicorp.com/terraform/install) — with **AWS provider >= 6.40** (for the `aws_s3files_*` resources)
+* [Install AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html), **v2.34 or later** (S3 Files support)
+* [Install Terraform](https://developer.hashicorp.com/terraform/install), with **AWS provider 6.40 or later** (the `aws_s3files_*` resources)
 
-If this is your first time watching our content, we recommend starting with this video: [AWS + Terraform: Easy Setup](https://youtu.be/BCMQo0CB9wk). It provides a step-by-step guide to properly configure Terraform, Packer, and the AWS CLI.
+If this is your first time watching our content, we recommend starting with
+this video: [AWS + Terraform: Easy Setup](https://youtu.be/BCMQo0CB9wk).
 
----
-
-## Download this Repository
+## Deploy
 
 ```bash
 git clone https://github.com/mamonaco1973/aws-s3-files.git
 cd aws-s3-files
+./apply.sh
 ```
 
----
+`apply.sh` runs `check_env.sh`, applies `01-directory` and then
+`02-servers`, and ends by running `validate.sh`:
 
-## Build the Code
+```
+============================================================================
+S3 Files + Active Directory Quick Start - Validation Output
+============================================================================
 
-Run [check_env](check_env.sh) to validate your environment, then run [apply](apply.sh) to provision the infrastructure.
+NOTE: Windows RDP Host FQDN: ec2-x-x-x-x.compute-1.amazonaws.com
+NOTE: Linux SSH Host FQDN:  ec2-x-x-x-x.compute-1.amazonaws.com
 
-```bash
-develop-vm:~/aws-s3-files$ ./apply.sh
-NOTE: Validating that required commands are found in your PATH.
-NOTE: aws is found in the current PATH.
-NOTE: terraform is found in the current PATH.
-NOTE: All required commands are available.
-NOTE: Checking AWS cli connection.
-NOTE: Successfully logged into AWS.
-Initializing the backend...
-Initializing provider plugins...
-Terraform has been successfully initialized!
+NOTE: Validation complete.
 ```
 
----
+## Try it
 
-### Build Results
+1. SSH to the Linux host as one of the users above (password in its
+   `*_ad_credentials_s3` secret), or connect with SSM, and look at the
+   mounts with `df -h` and `ls -al /s3 /s3/home`, as in the screenshot
+   above.
+2. RDP to the Windows host as the same user and open `Z:`. The repository
+   the gateway cloned is there:
 
-When the deployment completes, the following resources are created:
+   ![The S3-backed share as drive Z: on Windows](windows.png)
 
-- **Networking:**
-  - A VPC with public and private subnets
-  - Internet Gateway and NAT Gateway for controlled outbound access
-  - Route tables configured for both public and private subnets
+3. Create a file on either side, then find it as an object in the bucket
+   with `aws s3 ls s3://mcloud-s3files-<suffix>/ --recursive` after about a
+   minute.
 
-- **Security & IAM:**
-  - Security groups for the domain controller, Linux client, Windows client, and S3 Files mount targets
-  - An IAM **service role** assumed by S3 Files to access the bucket and manage its EventBridge change rule
-  - IAM roles and policies allowing EC2 to use AWS Systems Manager, read secrets, and **client-mount** the S3 Files file system
-  - Secrets stored in AWS Secrets Manager for AD administrator and test user credentials
-
-- **Active Directory Server:**
-  - Ubuntu EC2 instance running Samba 4 as a Domain Controller and DNS server
-  - Configured Kerberos realm and NetBIOS name
-  - Administrator credentials managed in AWS Secrets Manager
-
-- **Amazon S3 Files:**
-  - A versioned S3 bucket backing the file system
-  - An S3 Files file system with NFS mount targets in each private subnet
-  - Security group allowing NFS traffic (TCP/2049) from the domain-joined clients
-
-- **Linux Client Instance:**
-  - Domain-joined Amazon Linux 2023 EC2 instance with SSSD integration
-  - Mounts the S3 Files file system directly via NFS at `/s3`
-  - Re-exports `/s3` as a **Samba share**, enabling Windows clients to access the same S3-backed data
-
-- **Windows Client Instance:**
-  - Domain-joined Windows Server EC2 instance
-  - Maps drive `Z:` to the Samba `s3` share hosted on the Linux client
-  - Supports domain-authenticated users for SMB access
-
----
-
-### Users and Groups
-
-As part of this project, when the domain controller is provisioned, a set of sample **users** and **groups** are automatically created through Terraform-provisioned scripts running on the mini-ad server. These resources are intended for **testing and demonstration purposes**, showcasing how to automate user and group provisioning in a self-managed Active Directory environment.
-
-#### Groups Created
-
-| Group Name    | Group Category | Group Scope | gidNumber |
-|---------------|----------------|-------------|-----------|
-| mcloud-users  | Security       | Universal   | 10001     |
-| india         | Security       | Universal   | 10002     |
-| us            | Security       | Universal   | 10003     |
-| linux-admins  | Security       | Universal   | 10004     |
-
-#### Users Created and Group Memberships
-
-| Username | Full Name   | uidNumber | gidNumber | Groups Joined                     |
-|----------|-------------|-----------|-----------|-----------------------------------|
-| jsmith   | John Smith  | 10001     | 10001     | mcloud-users, us, linux-admins    |
-| edavis   | Emily Davis | 10002     | 10001     | mcloud-users, us                  |
-| rpatel   | Raj Patel   | 10003     | 10001     | mcloud-users, india, linux-admins |
-| akumar   | Amit Kumar  | 10004     | 10001     | mcloud-users, india               |
-
----
-
-#### Understanding `uidNumber` and `gidNumber` for Linux Integration
-
-The **`uidNumber`** (User ID) and **`gidNumber`** (Group ID) attributes are critical when integrating **Active Directory** with **Linux systems**, particularly in environments where **SSSD** ([System Security Services Daemon](https://sssd.io/)) or similar services are used for identity management. These attributes allow Linux hosts to recognize and map Active Directory users and groups into the **POSIX** (Portable Operating System Interface) user and group model.
-
----
-
-### Log into Windows Instance
-
-When the Windows instance boots, the [userdata script](02-servers/scripts/userdata.ps1) executes the following tasks:
-
-- Install Active Directory Administrative Tools
-- Install AWS CLI
-- Join EC2 instance to Active Directory
-- Grant RDP access to domain users
-- Map drive `Z:` to the Samba `s3` share
-- Perform a final system reboot
-
-Administrator credentials are stored in the `admin_ad_credentials_s3` secret.
-
-![Windows EC2 Instance](windows.png)
-
----
-
-### Log into Linux Instance
-
-When the Linux instance boots, the [userdata script](02-servers/scripts/userdata.sh) runs the following tasks:
-
-- Install required packages via `dnf`, including `amazon-efs-utils` 3.x (prebuilt on AL2023) for the `mount.s3files` helper (SSM agent and AWS CLI v2 ship with AL2023)
-- Join the Active Directory domain with SSSD
-- Enable password authentication for AD users
-- Configure SSSD for AD integration (POSIX ids, mkhomedir via authselect)
-- Grant sudo privileges to the `linux-admins` group
-- Mount the S3 Files file system at `/s3` and share it via Samba for Windows access
-
-Linux user credentials are stored as secrets.
-
-![Linux EC2 Instance](linux.png)
-
----
-
-### Clean Up Infrastructure
-
-When you are finished testing, you can remove all provisioned resources with:
+## Teardown
 
 ```bash
 ./destroy.sh
 ```
 
-This will use Terraform to delete the VPC, EC2 instances, IAM roles, security groups, the S3 Files file system, and the backing S3 bucket. Secrets stored in AWS Secrets Manager are force-deleted. Note that if the backing bucket contains objects, you may need to empty it before the bucket can be destroyed.
+`destroy.sh` destroys `02-servers`. If the file system won't delete (it
+can wait on pending exports to S3), it force-deletes it with the AWS CLI,
+removes it from state and destroys again. Then it deletes the five secrets
+without a recovery window and destroys `01-directory`. The bucket has
+`force_destroy`, so its objects go with it.
+
+## Notes
+
+- **Lab only.** RDP (3389), SSH (22) and SMB (445) are open to `0.0.0.0/0`
+  on public IPs, and so is NFS on the S3 Files security group.
+- The instance role has `s3files:ClientRootAccess`, so root on the gateway
+  isn't squashed.
+- `/home` is on S3 Files. With write aggregation and S3 API writes ignoring
+  NFS locks, that's fine for a lab but a poor fit for busy interactive home
+  directories.
+- The old README listed `india` as 10002 and `us` as 10003; the template
+  sets `us` to 10002 and `india` to 10003.
